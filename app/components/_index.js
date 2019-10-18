@@ -1,16 +1,19 @@
 import React, {Component} from "react"
-import {Segment, Grid, Button, Card, Image, Form, Label, Icon} from 'semantic-ui-react';
+import {Segment, Grid, Button, Card, Image, Form, Label, Icon, Statistic} from 'semantic-ui-react';
 import {i18n, Link, withNamespaces} from '../i18n'
 import Layout from "./layout"
 import axios from 'axios';
-import {Menu} from "semantic-ui-react/dist/commonjs/collections/Menu/Menu";
+import CountUp from "react-countup";
 
-class _index extends Component {
+class _index extends Component {   
+
     constructor(props) {
         super(props);
+        this.server_endpoint = (process.env.NODE_ENV == 'production' ? "https://dfile.app" : "http://localhost:5000");
         this.state = {
             loading: true,
-            files: []
+            files: [],
+            file_count: 1212
         };
 
         this.onChange = this.onChange.bind(this);
@@ -25,6 +28,22 @@ class _index extends Component {
             namespacesRequired: ['common'],
         }
     }
+    
+	async componentDidMount() {
+		this.reload();
+	}
+
+    async reload() {
+        try{
+            axios.get(this.server_endpoint+"/stat")
+            .then(res=>{
+                //console.log(res.data);
+                this.setState({file_count: res.data.file_count});
+            })
+        }catch(e){
+            console.error(e);
+        }
+    }
 
     onChange(e) {
         if (e.target.files.length > 0) {
@@ -34,14 +53,21 @@ class _index extends Component {
     }
 
     upload(files) {
+        const list = [... this.state.files];
+        const count = this.state.files.length;
+        for (let i = 0; i < files.length; i++) {
+            const upload_item = {key:'key'+i, name: files[i].name, status:'uploading', url:''};
+            list.push(upload_item);
+        }
+        this.setState({files: list});
         for (let i = 0; i < files.length; i++) {
             this.upload_file(files[i]);
         }
+        
     }
 
     upload_file(file) {
-        const upload_file_url = (process.env.NODE_ENV == 'production' ? "https://dfile.app" : "http://localhost:5000");
-        //const upload_file_url="https://dfile.app";
+        const upload_file_url = this.server_endpoint;
         const data = new FormData();
         data.append('file', file);
         const self = this;
@@ -50,10 +76,22 @@ class _index extends Component {
                 'Content-Type': 'multipart/form-data'
             }
         }).then(res => {
-            console.log('res: ', res);
-            const upload_result = {name: file.name, url: res.data}
-            const list = self.state.files.concat(upload_result);
-            self.setState({files: list});
+            console.log(file.name, ': ', res);
+
+            this.setState(state => {
+                const list = state.files.map(item => {
+                    if(item.name == file.name){
+                        item.url = res.data;
+                        item.status = 'done';
+                    }
+                    return item;
+                });
+                return {
+                    list,
+                };
+            });
+
+            self.reload();
         })
     }
 
@@ -68,34 +106,44 @@ class _index extends Component {
             console.log('e: ', e);
             return;
         }
+        const files = []
         if (e.dataTransfer.items) {
             // Use DataTransferItemList interface to access the file(s)
             for (let i = 0; i < e.dataTransfer.items.length; i++) {
                 // If dropped items aren't files, reject them
                 if (e.dataTransfer.items[i].kind === 'file') {
                     const file = e.dataTransfer.items[i].getAsFile();
-                    //console.log('... file[' + i + '].name = ' + file.name);
-                    this.upload_file(file);
+                    files.push(file);
                 }
             }
         } else {
             // Use DataTransfer interface to access the file(s)
             for (let i = 0; i < e.dataTransfer.files.length; i++) {
                 const file = e.dataTransfer.files[i];
-                //console.log('... file[' + i + '].name = ' + file.name);
-                this.upload_file(file);
+                files.push(file);
             }
         }
+        this.upload(files);
     }
 
     onDragOver(e) {
         e.preventDefault();
-        console.log('File(s) in drop zone');
+        //console.log('File(s) in drop zone');
     }
 
     onClear(e) {
         e.preventDefault();
         this.setState({files: []});
+    }
+
+    render_file_link(t, item){
+        if(item.status == 'done' && item.url.startsWith("http")){
+            return <>{item.name}: <a href={item.url} target="_blank">{item.url}</a><br/></>
+        }else if(item.status == 'uploading'){
+            return <>{item.name}: <span className="message">{t('uploading')}</span><br/></>
+        }else{
+            return <>{item.name}: <span className="red message">{item.url}</span><br/></>
+        }
     }
 
     render() {
@@ -118,6 +166,23 @@ class _index extends Component {
 
                         <Grid.Column textAlign="center">
                             <h1 className="title">{t("sub-title")}</h1>
+                            <div>
+                                <Statistic color="pink" size="small">
+                                    <Statistic.Value>
+                                        <span>
+                                            <span className="pink">
+                                                <i className=" file icon" />
+                                            </span>
+                                            &nbsp;
+                                            <CountUp start={0} end={this.state.file_count} duration={3} />
+                                            &nbsp;
+                                            <label className="label" style={{fontSize:"16px"}}>{t("files")}</label>
+                                        </span>
+                                    </Statistic.Value>
+                                    <Statistic.Label content="" />
+                                </Statistic>
+                            </div>
+                            <p></p>
                             <div className="term" onDrop={this.onDrag} onDragOver={this.onDragOver}>
                                 <div className="term-header">
                                     <button className="term-header-button term-header-button-close"></button>
@@ -152,9 +217,7 @@ class _index extends Component {
                                            </span>
                                         <input ref={input => this.file_input = input} type="file" name="file" multiple="multiple" style={{display: "none"}} onChange={this.onChange}/>
                                         <div className="term-content-output">
-                                            {this.state.files.map(item => (
-                                                <>{item.name}: <a href={item.url} target="_blank">{item.url}</a><br/></>
-                                            ))}
+                                            {this.state.files.map(item=>this.render_file_link(t, item))}
                                         </div>
                                     </div>
                                 </div>
@@ -220,7 +283,7 @@ class _index extends Component {
                                     <div className="term-content-row">
                                         <span className="term-content-comment"># {t('comment-download')}</span><br/>
                                         <span className="term-content-arrow">➜</span> <span className="term-content-tilde">~</span>
-                                        <span className="term-content-caret">curl https://dfile.app/QmV...HZ -o yourfile.txt</span>
+                                        <span className="term-content-caret">curl -L https://dfile.app/QmV...HZ -o yourfile.txt</span>
                                         <p className="term-content-output"></p>
                                     </div>
                                     <div className="term-content-row">

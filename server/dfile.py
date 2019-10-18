@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Flask, abort, request, send_file
+from flask import Flask, abort, request, jsonify
 from flask_script import Manager
 from flask_cors import CORS
 import os
-import requests
-import ipfshttpclient
 import logging
-from logdna import LogDNAHandler
+import boto3
+from botocore.exceptions import ClientError
+from ipfs import ipfs_hash
+import urllib
+import time
+from log import init_log
 
 app = Flask(__name__)
 CORS(app)
@@ -16,73 +19,62 @@ app.config.from_pyfile('config.py')
 
 manager = Manager(app)
 
-logdna_key = app.config['LOGDNA_KEY']
+init_log(app.config['LOGDNA_KEY'])
 log = logging.getLogger('logdna')
-log.setLevel(logging.INFO)
-
-options = {
-    'hostname': 'dapp',
-    'ip': '127.0.0.1',
-    'index_meta': True
-}
-
-console = logging.StreamHandler()
-root = logging.getLogger('')
-root.addHandler(console)
-if logdna_key != "":
-    root.addHandler(LogDNAHandler(logdna_key, options))
 
 
-def download(url):
-    h = {"Accept-Encoding": "identity"}
-    r = requests.get(url, stream=True, verify=False, headers=h)
+global file_count
+file_count = int(app.config['INIT_FILE_COUNT'])
 
+
+def upload_file(file, bucket='dfile', object_name=None):
+    """Upload a file to an S3 bucket
+
+    :param file: File to upload
+    :param bucket: Bucket to upload to
+    :param object_name: S3 object name. If not specified then file_name is used
+    :return: True if file was uploaded, else False
+    """
+
+    # Upload the file
     try:
-        r.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        log.exception("IPFS Server Error! url:{0}, exception:{1}".format(url, str(e)))
-        return "IPFS Server Error! \n", 503
+        start1 = time.time()
+        file_name = file.filename
+        log.info('content_type: {}'.format(file.content_type))
+        bytes = file.read()
+        hash = ipfs_hash(bytes)
+        log.info("ipfs hash: {0:.2f}s".format(time.time() - start1))
+        name, ext = os.path.splitext(file_name)
+        log.info('hash: {}, ext: {}'.format(hash, ext))
 
-    if "content-type" in r.headers:
-        return send_file(r.raw, r.headers["content-type"])
-    else:
-        return send_file(r.raw)
+        # If S3 object_name was not specified, use ipfs hash
+        if object_name is None:
+            object_name = '{}{}'.format(hash, ext)
 
-
-def upload(url, file):
-    h = {"Accept-Encoding": "identity"}
-    d = {"path": file}
-    r = requests.post(url, files=d, stream=True, verify=False, headers=h)
-
-    try:
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.HTTPError as e:
-        log.exception("Upload Error! file name:{0}, exception:{1}".format(file.filename, str(e)))
-        return "IPFS Upload Error! \n"
-
-
-@app.route("/<path:path>")
-@app.route("/down/<path:path>")
-def down(path):
-    try:
-        p = os.path.splitext(path)
-        hash = str(p[0])
-
-        if not hash or not hash.startswith('Qm'):
-            return "<Invalid Path>", 404
-
-        log.info("hash:{0}".format(hash), {'app': 'dfile-down-req'})
-
-        if 'IPFS_API_URL' in app.config:
-            url = app.config['IPFS_API_URL'] + '/cat/' + hash
-        else:
-            url = app.config['IPFS_FILE_URL'] + hash
-
-        return download(url)
+        session = boto3.session.Session()
+        client = session.client('s3',
+                                region_name=app.config['S3_REGION'],
+                                endpoint_url=app.config['S3_ENDPOINT'],
+                                aws_access_key_id=app.config['S3_KEY'],
+                                aws_secret_access_key=app.config['S3_SECRET'])
+        file.seek(0, 0)
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/customizations/s3.html#boto3.s3.transfer.S3Transfer.ALLOWED_UPLOAD_ARGS
+        # ExtraArgs:['ACL', 'CacheControl', 'ContentDisposition', 'ContentEncoding', 'ContentLanguage', 'ContentType', 'Expires', 'GrantFullControl',
+        # 'GrantRead', 'GrantReadACP', 'GrantWriteACP', 'Metadata', 'RequestPayer', 'ServerSideEncryption', 'StorageClass', 'SSECustomerAlgorithm',
+        # 'SSECustomerKey', 'SSECustomerKeyMD5', 'SSEKMSKeyId', 'WebsiteRedirectLocation']
+        extra_args = {'ACL': 'public-read', 'ContentType': file.content_type, 'Metadata': {'name': urllib.parse.quote(file_name, safe='')}}
+        start2 = time.time()
+        response = client.upload_fileobj(file, bucket, object_name, ExtraArgs=extra_args)
+        log.info("s3 upload: {0:.2f}s".format(time.time() - start2))
+        log.info("total: {0:.2f}s".format(time.time() - start1))
+        # log.info('res: {}'.format(response))
+        return {'hash': object_name}
+    except ClientError as e:
+        log.exception("S3 Client Error! file name:{0}, exception:{1}".format(file.filename, str(e)))
+        return {'hash': '', 'error': "S3 Client Error! \n"}
     except Exception as e:
-        log.exception("Download Error! path:{0}, exception:{1}".format(path, str(e)))
-        return "Download Error! \n", 503
+        log.exception("S3 Upload Error! file name:{0}, exception:{1}".format(file.filename, str(e)))
+        return {'hash': '', 'error': "S3 Upload Error! \n"}
 
 
 @app.route("/", methods=["POST", "PUT"])
@@ -91,17 +83,17 @@ def up():
     try:
         if "file" in request.files:
             file = request.files["file"]
+
             log.info("file name: {}".format(file.filename), {'app': 'dfile-up-req'})
-            if 'IPFS_API_URL' in app.config:
-                url = app.config['IPFS_API_URL'] + '/add'
-                res = upload(url, file)
-            else:
-                client = ipfshttpclient.connect(app.config['IPFS_CONNECT_URL'])
-                res = client.add(file)
-                print("res: {}".format(res))
+
+            res = upload_file(file)
 
             log.info("upload res: {}".format(res), {'app': 'dfile-up-res'})
-            url = app.config['DOMAIN'] + '/' + str(res['Hash'])
+            if not res['hash']:
+                return res['error']
+            global file_count
+            file_count += 1
+            url = app.config['DOMAIN'] + '/' + str(res['hash'])
             return url
 
         abort(400)
@@ -111,17 +103,19 @@ def up():
         return "Upload Error! \n", 503
 
 
+@app.route("/stat", methods=["GET"])
+def stat():
+    try:
+        return jsonify({'file_count': file_count})
+
+    except Exception as e:
+        log.exception("Upload Error! exception:{}".format(str(e)))
+        return "Upload Error! \n", 503
+
+
 def legal():
     return "451 Unavailable For Legal Reasons\n", 451
 
-
-# @app.errorhandler(400)
-# @app.errorhandler(404)
-# @app.errorhandler(414)
-# @app.errorhandler(415)
-# def segfault(e):
-#     return "Segmentation fault\n", e.code
-#
 
 @manager.command
 def debug():
