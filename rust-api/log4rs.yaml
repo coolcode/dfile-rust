@@ -1,0 +1,40 @@
+# Scan this file for changes every 20 seconds
+refresh_rate: 20 seconds
+
+appenders:
+  # An appender named "stdout" that writes to stdout
+  stdout:
+    kind: console
+    encoder:
+      pattern: "[{d(%Y-%m-%d %H:%M:%S)}] {l} [{M}]-{m}{n}"
+
+  # An appender named "log_file" that writes to a file with a custom pattern encoder
+  log_file:
+    kind: file
+    path: "logs/app.log"
+    encoder:
+      pattern: "[{d(%Y-%m-%d %H:%M:%S)}] {l} [{M}]-{m}{n}"
+
+# Set the default logging level to "warn" and attach the "stdout" appender to the root
+root:
+  level: info
+  appenders:
+  - stdout
+  - log_file
+
+loggers:
+  # Raise the maximum log level for events sent to the "app::backend::db" logger to "info"
+  hyper:
+    level: info
+  rocket::rocket:
+    level: info
+  dfile_api::main:
+    level: info
+
+    # Route log events sent to the "app::requests" logger to the "requests" appender,
+    # and *not* the normal appenders installed at the root
+    #app::requests:
+    #level: info
+    #appenders:
+    #  - requests
+    #additive: false
