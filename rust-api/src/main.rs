@@ -130,7 +130,6 @@ fn stat(upload_count: State<UploadCount>) -> JsonValue {
 #[post("/", data = "<data>")]
 // signature requires the request to have a `Content-Type`
 fn upload(content_type: &ContentType, data: Data, upload_count: State<UploadCount>) -> &'static str {
-    // this and the next check can be implemented as a request guard but it seems like just more boilerplate than necessary
     if !content_type.is_form_data() {
 //        return Err(Custom(
 //            Status::BadRequest,
