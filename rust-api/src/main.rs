@@ -139,10 +139,7 @@ fn upload(content_type: &ContentType, data: Data, upload_count: State<UploadCoun
     }
 
     let (_, boundary) = content_type.params().find(|&(k, _)| k == "boundary").ok_or_else(
-//        || Custom(
-//            Status::BadRequest,
-//            "`Content-Type: multipart/form-data` boundary param not provided".into(),
-//        )
+
 || "`Content-Type: multipart/form-data` boundary param not provided"
     ).expect("Error in boundary");
 
